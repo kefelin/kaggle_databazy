@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>3D Cube with Smooth Dashed Edge Transitions</title>
+<style>
+  body {
+    margin: 0;
+    background: black;
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    font-family: Arial, sans-serif;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    cursor: grab;
+  }
+  canvas.dragging {
+    cursor: grabbing;
+  }
+  .info {
+    position: absolute;
+    bottom: 20px;
+    color: #00ff66;
+    text-align: center;
+    width: 100%;
+    font-size: 14px;
+    text-shadow: 0 0 5px #00ff66;
+    z-index: 10;
+  }
+</style>
+</head>
+<body>
+<canvas id="cube"></canvas>
+<div class="info"></div>
+<script>
+(() => {
+  const canvas = document.getElementById('cube');
+  const ctx = canvas.getContext('2d');
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = window.innerWidth * dpr;
+    canvas.height = window.innerHeight * dpr;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // Cube geometry
+  const verts = [
+    [-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1], // back face
+    [-1,-1, 1],[1,-1, 1],[1,1, 1],[-1,1, 1]  // front face
+  ];
+  
+  // Define faces with proper winding order
+  const faces = [
+    {vertices: [0,1,2,3], normal: [0,0,-1]}, // back
+    {vertices: [4,5,6,7], normal: [0,0,1]},  // front
+    {vertices: [0,1,5,4], normal: [0,-1,0]}, // bottom
+    {vertices: [2,3,7,6], normal: [0,1,0]},  // top
+    {vertices: [0,3,7,4], normal: [-1,0,0]}, // left
+    {vertices: [1,2,6,5], normal: [1,0,0]}   // right
+  ];
+  
+  const edges = [
+    [0,1],[1,2],[2,3],[3,0], // back face edges
+    [4,5],[5,6],[6,7],[7,4], // front face edges
+    [0,4],[1,5],[2,6],[3,7]  // connecting edges
+  ];
+
+  // Map edges to faces
+  const edgeToFaces = edges.map(edge => {
+    const adjacentFaces = faces.filter(face => {
+      const faceVerts = face.vertices;
+      return faceVerts.includes(edge[0]) && faceVerts.includes(edge[1]);
+    });
+    return adjacentFaces;
+  });
+
+  let angleX = 0, angleY = 0;
+  let omegaX = 0, omegaY = 0;
+  const damping = 0.99;
+  const cubeSize = 180;
+  const camZ = 5, perspective = 3;
+
+  // Dragging
+  let dragging = false;
+  let lastX = 0, lastY = 0;
+
+  function pointerPos(e) {
+    if (e.touches && e.touches.length) {
+      return {x: e.touches[0].clientX, y: e.touches[0].clientY};
+    }
+    return {x: e.clientX, y: e.clientY};
+  }
+
+  function onDown(e) {
+    dragging = true;
+    canvas.classList.add('dragging');
+    const p = pointerPos(e);
+    lastX = p.x; lastY = p.y;
+  }
+  function onMove(e) {
+    if (!dragging) return;
+    const p = pointerPos(e);
+    const dx = p.x - lastX;
+    const dy = p.y - lastY;
+    lastX = p.x; lastY = p.y;
+    const k = 0.004;
+    omegaY = dx * k;
+    omegaX = -dy * k;
+    angleX += omegaX;
+    angleY += omegaY;
+  }
+  function onUp() {
+    dragging = false;
+    canvas.classList.remove('dragging');
+  }
+
+  canvas.addEventListener('mousedown', onDown);
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+  canvas.addEventListener('touchstart', onDown, {passive:true});
+  window.addEventListener('touchmove', onMove, {passive:true});
+  window.addEventListener('touchend', onUp);
+
+  // Rotation + projection
+  function rotate([x,y,z], ax, ay) {
+    let cos = Math.cos(ax), sin = Math.sin(ax);
+    let y1 = y*cos - z*sin;
+    let z1 = y*sin + z*cos;
+    cos = Math.cos(ay); sin = Math.sin(ay);
+    let x2 = x*cos + z1*sin;
+    let z2 = -x*sin + z1*cos;
+    return [x2,y1,z2];
+  }
+  
+  function project([x,y,z]) {
+    const f = perspective;
+    const scale = f/(camZ - z);
+    return [x*scale*cubeSize, y*scale*cubeSize];
+  }
+
+  // Calculate rotated normal
+  function rotateNormal([x,y,z], ax, ay) {
+    let cos = Math.cos(ax), sin = Math.sin(ax);
+    let y1 = y*cos - z*sin;
+    let z1 = y*sin + z*cos;
+    cos = Math.cos(ay); sin = Math.sin(ay);
+    let x2 = x*cos + z1*sin;
+    let z2 = -x*sin + z1*cos;
+    return [x2,y1,z2];
+  }
+
+  // Smooth visibility cache
+  const edgeVisibility = new Array(edges.length).fill(1);
+
+  // Improved drawLine function with smooth transitions
+  function drawLine(x1, y1, x2, y2, visibility) {
+    ctx.save();
+    ctx.strokeStyle = '#00ff66';
+    ctx.shadowColor = '#00ff66';
+    ctx.shadowBlur = 10;
+    ctx.lineWidth = 2;
+
+    // Calculate line length for precise dash pattern
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const lineLength = Math.sqrt(dx * dx + dy * dy);
+    
+    // Base dash pattern (dash, gap)
+    const baseDashLength = 8;
+    const baseGapLength = 4;
+    const basePatternLength = baseDashLength + baseGapLength;
+    
+    // Calculate how many pattern repetitions fit in the line
+    const patternRepetitions = lineLength / basePatternLength;
+    
+    // Smooth transition between solid and dashed
+    if (visibility > 0.95) {
+      // Fully solid
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    } else if (visibility < 0.05) {
+      // Fully dashed
+      ctx.setLineDash([baseDashLength, baseGapLength]);
+      ctx.globalAlpha = 0.7;
+    } else {
+      // Smooth transition between solid and dashed
+      // We'll interpolate the dash pattern
+      const dashInterpolation = 1 - visibility;
+      
+      // Calculate interpolated dash pattern
+      const dashLength = baseDashLength * dashInterpolation;
+      const gapLength = baseGapLength + (basePatternLength - baseGapLength) * dashInterpolation;
+      
+      ctx.setLineDash([dashLength, gapLength]);
+      
+      // Also interpolate opacity
+      ctx.globalAlpha = 0.7 + 0.3 * visibility;
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  let lastTime = performance.now();
+  function frame(now) {
+    const dt = (now - lastTime)/16;
+    lastTime = now;
+
+    if (!dragging) {
+      angleX += omegaX * dt;
+      angleY += omegaY * dt;
+      omegaX *= damping;
+      omegaY *= damping;
+    }
+
+    ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+
+    const rotatedVerts = verts.map(v => rotate(v, angleX, angleY));
+    const screenVerts = rotatedVerts.map(r => {
+      const p = project(r);
+      return [p[0]+w/2, p[1]+h/2, r[2]];
+    });
+
+    // Calculate rotated face normals
+    const rotatedFaceNormals = faces.map(face => 
+      rotateNormal(face.normal, angleX, angleY)
+    );
+
+    // Update edge visibility based on adjacent face normals
+    edges.forEach((edge, i) => {
+      const adjacentFaces = edgeToFaces[i];
+      let isVisible = false;
+      
+      // An edge is visible if at least one adjacent face is facing the camera
+      for (const face of adjacentFaces) {
+        const faceIndex = faces.indexOf(face);
+        const normal = rotatedFaceNormals[faceIndex];
+        
+        // The face is visible if its normal has a positive Z component (pointing toward camera)
+        if (normal[2] > 0) {
+          isVisible = true;
+          break;
+        }
+      }
+      
+      const targetVis = isVisible ? 1 : 0;
+      // Use a faster interpolation when transitioning to dashed, slower when transitioning to solid
+      const interpolationSpeed = targetVis === 1 ? 0.05 : 0.1;
+      edgeVisibility[i] += (targetVis - edgeVisibility[i]) * interpolationSpeed;
+    });
+
+    // Draw edges
+    edges.forEach(([a,b], i) => {
+      const [x1,y1] = screenVerts[a];
+      const [x2,y2] = screenVerts[b];
+      drawLine(x1,y1,x2,y2, edgeVisibility[i]);
+    });
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
