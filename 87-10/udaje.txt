@@ -1,0 +1,3 @@
+Slovensko 49035 5450000 True white blue red 1400
+Cesko 78866 10500000 False white red blue 1600
+Taliansko 301340 59000000 True green white red 2000
